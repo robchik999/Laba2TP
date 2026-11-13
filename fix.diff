@@ -1,0 +1,108 @@
+--- a/vulnerable_app/app.py
++++ b/vulnerable_app/app.py
+@@ -1,30 +1,30 @@
+ """
+-Лабораторная работа №2. Уязвимое веб-приложение на Flask.
++Лабораторная работа №2. ПРОПАТЧЕННАЯ версия веб-приложения.
+ 
+-Реализованы две учебные уязвимости из OWASP Top 10 (2021):
++Исправления:
+ 
+-1. A03:2021 - Injection (SQL Injection) -- маршрут /login
+-   Запрос к базе данных собирается конкатенацией строк, без
+-   параметризации и без экранирования пользовательского ввода.
+-
+-2. A01:2021 - Broken Access Control (IDOR,
+-   Insecure Direct Object Reference) -- маршрут /profile/<user_id>
+-   Любой аутентифицированный пользователь может запросить профиль
+-   любого другого пользователя, просто подставив чужой id,
+-   без проверки, что запрошенный id совпадает с id владельца сессии.
+-
++1. A03:2021 - Injection (SQL Injection) -- /login
++   Запрос переписан на параметризованный (с плейсхолдерами "?"),
++   пользовательский ввод больше не подставляется в текст SQL-запроса
++   напрямую, поэтому попытка внедрить SQL-код обрабатывается как
++   обычное (не совпадающее) значение логина/пароля.
++
++2. A01:2021 - Broken Access Control (IDOR) -- /profile/<user_id>
++   Добавлена проверка, что запрошенный user_id совпадает с id
++   владельца текущей сессии. При попытке обратиться к чужому
++   профилю возвращается 403 Forbidden.
+ """
+ 
+ import sqlite3
+ from pathlib import Path
+ 
+-from flask import Flask, g, request, session, redirect, url_for, render_template_string
++from flask import Flask, g, request, session, redirect, url_for, render_template_string, abort
+ 
+ APP_DIR = Path(__file__).parent
+ DB_PATH = APP_DIR / "database.db"
+ 
+ app = Flask(__name__)
+-app.secret_key = "dev-secret-key-not-for-production"  # демо-ключ, не для прод
++app.secret_key = "dev-secret-key-not-for-production"
+ 
+ 
+ def get_db():
+@@ -99,30 +95,18 @@
+ 
+ @app.route("/login", methods=["GET", "POST"])
+ def login():
+-    """
+-    УЯЗВИМОСТЬ 1 (A03:2021 - Injection, SQL Injection).
+-
+-    SQL-запрос строится конкатенацией строк из полей формы,
+-    без параметризованного запроса и без какой-либо фильтрации
+-    ввода. Это позволяет атакующему внедрить произвольный SQL-код,
+-    например, обойти проверку пароля с помощью payload вида
+-    "' OR '1'='1' -- ".
+-    """
++    """ИСПРАВЛЕНО: параметризованный запрос вместо конкатенации строк."""
+     error = None
+     if request.method == "POST":
+         username = request.form.get("username", "")
+         password = request.form.get("password", "")
+ 
+         db = get_db()
+-        # НЕБЕЗОПАСНО: конкатенация пользовательского ввода в SQL-запрос
+-        query = (
+-            "SELECT * FROM users WHERE username = '"
+-            + username
+-            + "' AND password = '"
+-            + password
+-            + "'"
++        # БЕЗОПАСНО: значения передаются отдельно от текста запроса
++        cursor = db.execute(
++            "SELECT * FROM users WHERE username = ? AND password = ?",
++            (username, password),
+         )
+-        cursor = db.execute(query)
+         user = cursor.fetchone()
+ 
+         if user:
+@@ -136,18 +120,15 @@
+ 
+ @app.route("/profile/<int:user_id>")
+ def profile(user_id):
+-    """
+-    УЯЗВИМОСТЬ 2 (A01:2021 - Broken Access Control, IDOR).
+-
+-    Проверяется только факт, что пользователь аутентифицирован
+-    (наличие user_id в сессии), но НЕ проверяется, что запрошенный
+-    user_id совпадает с id владельца текущей сессии. Поэтому любой
+-    авторизованный пользователь может просмотреть чужой профиль,
+-    просто подставив другой id в URL.
+-    """
++    """ИСПРАВЛЕНО: проверка, что запрошенный профиль принадлежит
++    текущему авторизованному пользователю (устранение IDOR)."""
+     if "user_id" not in session:
+         return redirect(url_for("login"))
+ 
++    if user_id != session["user_id"]:
++        # Запрошен чужой профиль -- доступ запрещён
++        abort(403)
++
+     db = get_db()
+     user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+     if user is None:
